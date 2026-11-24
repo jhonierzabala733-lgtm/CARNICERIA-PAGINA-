@@ -1,0 +1,896 @@
+from datetime import date, datetime, timedelta
+import json
+import os
+import shutil
+
+
+CARPETA = os.path.dirname(os.path.abspath(__file__))
+ARCHIVO = os.path.join(CARPETA, "datos_carniceria.json")
+
+
+# ====== CLASES DEL DIAGRAMA UML ======
+class Persona:
+    def __init__(self, nombre, documento, telefono):
+        self._nombre = nombre
+        self.documento = documento
+        self.telefono = telefono
+
+    def get_nombre(self):
+        return self._nombre
+
+    def set_nombre(self, nombre):
+        self._nombre = nombre
+
+
+class Cliente(Persona):
+    def __init__(self, nombre, documento, telefono, direccion):
+        super().__init__(nombre, documento, telefono)
+        self.direccion = direccion
+        self.ventas = []
+
+
+class Empleado(Persona):
+    def __init__(self, nombre, documento, telefono, salario, cargo):
+        super().__init__(nombre, documento, telefono)
+        self._salario = salario
+        self.cargo = cargo
+
+    def get_salario(self):
+        return self._salario
+
+    def set_salario(self, salario):
+        if salario >= 0:
+            self._salario = salario
+
+    def calcular_salario(self):
+        return self._salario
+
+
+class Carnicero(Empleado):
+    def __init__(self, nombre, documento, telefono, salario, bono):
+        super().__init__(nombre, documento, telefono, salario, "Carnicero")
+        self.bono = bono
+
+    def calcular_salario(self):
+        return self.get_salario() + self.bono
+
+
+class Cajero(Empleado):
+    def __init__(self, nombre, documento, telefono, salario, caja):
+        super().__init__(nombre, documento, telefono, salario, "Cajero")
+        self.caja = caja
+
+
+class CategoriaProducto:
+    def __init__(self, codigo, nombre):
+        self.codigo = codigo
+        self.nombre = nombre
+        self.productos = []
+
+
+class ProductoCarnico:
+    def __init__(self, codigo, nombre, precio, categoria):
+        self.codigo = codigo
+        self.nombre = nombre
+        self._precio = precio
+        self.categoria = categoria
+        self.lotes = []
+        categoria.productos.append(self)
+
+    def get_precio(self):
+        return self._precio
+
+    def set_precio(self, precio):
+        if precio > 0:
+            self._precio = precio
+
+    def stock(self):
+        total = 0
+        for lote in self.lotes:
+            if lote.estado() == "Vigente":
+                total += lote.kilos
+        return round(total, 3)
+
+    def descontar(self, kilos):
+        if kilos <= 0 or kilos > self.stock():
+            return False
+        for lote in sorted(self.lotes, key=lambda l: l.vencimiento):
+            if lote.estado() == "Vigente":
+                retirar = min(kilos, lote.kilos)
+                lote.kilos = round(lote.kilos - retirar, 3)
+                kilos = round(kilos - retirar, 3)
+                if kilos <= 0:
+                    break
+        return True
+
+
+class LoteCarne:
+    def __init__(self, codigo, producto, kilos, vencimiento):
+        self.codigo = codigo
+        self.producto = producto
+        self.kilos = kilos
+        self.vencimiento = vencimiento
+        self.cuarto = None
+        self.registros = []
+        producto.lotes.append(self)
+
+    def estado(self):
+        if self.vencimiento < date.today():
+            return "Vencido"
+        return "Vigente"
+
+
+class CuartoFrio:
+    def __init__(self, nombre, capacidad, minimo, maximo):
+        self.nombre = nombre
+        self.capacidad = capacidad
+        self.minimo = minimo
+        self.maximo = maximo
+        self.lotes = []
+
+    def espacio(self):
+        ocupacion = sum(lote.kilos for lote in self.lotes)
+        return round(self.capacidad - ocupacion, 3)
+
+    def almacenar(self, lote):
+        if lote.kilos > self.espacio():
+            return False
+        self.lotes.append(lote)
+        lote.cuarto = self
+        return True
+
+
+class RegControlFrio:
+    def __init__(self, lote, temperatura):
+        self.lote = lote
+        self.temperatura = temperatura
+        self.fecha = datetime.now()
+        lote.registros.append(self)
+
+    def generar_alerta(self):
+        cuarto = self.lote.cuarto
+        if cuarto.minimo <= self.temperatura <= cuarto.maximo:
+            return "Dentro del rango configurado"
+        return "ALERTA: fuera del rango configurado"
+
+
+class Proveedor:
+    def __init__(self, codigo, nombre, telefono):
+        self.codigo = codigo
+        self.nombre = nombre
+        self.telefono = telefono
+        self.ordenes = []
+
+
+class DetalleOrdenCompra:
+    def __init__(self, producto, kilos, costo):
+        self.producto = producto
+        self.kilos = kilos
+        self.costo = costo
+
+    def subtotal(self):
+        return self.kilos * self.costo
+
+
+class OrdenCompra:
+    def __init__(self, codigo, proveedor):
+        self.codigo = codigo
+        self.proveedor = proveedor
+        self.fecha = date.today()
+        self.detalles = []
+        proveedor.ordenes.append(self)
+
+    def agregar(self, detalle):
+        self.detalles.append(detalle)
+
+    def total(self):
+        return sum(d.subtotal() for d in self.detalles)
+
+
+class BasculaDigital:
+    def __init__(self):
+        self.peso = 0
+
+    def capturar_peso(self, kilos):
+        self.peso = kilos  # Entrada manual: bascula simulada
+        return self.peso
+
+
+class DetalleVenta:
+    def __init__(self, producto, kilos, precio):
+        self.producto = producto
+        self.kilos = kilos
+        self.precio = precio
+
+    def subtotal(self):
+        return round(self.kilos * self.precio, 2)
+
+
+class MetodoPago:
+    def __init__(self, monto):
+        self.monto = monto
+
+    def procesar_pago(self):
+        return False
+
+
+class PagoEfectivo(MetodoPago):
+    def __init__(self, monto, recibido):
+        super().__init__(monto)
+        self.recibido = recibido
+
+    def procesar_pago(self):
+        return self.recibido >= self.monto
+
+
+class PagoDigital(MetodoPago):
+    def __init__(self, monto, referencia):
+        super().__init__(monto)
+        self.referencia = referencia
+
+    def procesar_pago(self):
+        return self.referencia.strip() != ""  # Simulacion
+
+
+class Factura:
+    def __init__(self, numero, venta, pago):
+        self.numero = numero
+        self.venta = venta
+        self.pago = pago
+
+    def imprimir(self):
+        print("\n========== FACTURA", self.numero, "==========")
+        print("Fecha:", self.venta.fecha)
+        print("Cliente:", self.venta.cliente.get_nombre())
+        if self.venta.cajero is not None:
+            print("Cajero:", self.venta.cajero.get_nombre())
+        print("----------------------------------")
+        for d in self.venta.detalles:
+            print(f"{d.producto.nombre} - {d.kilos:g} kg x ${d.precio:,.0f}")
+            print(f"   Subtotal: ${d.subtotal():,.0f}")
+        print("----------------------------------")
+        print(f"TOTAL: ${self.venta.total():,.0f}")
+        if isinstance(self.pago, PagoEfectivo):
+            print(f"Efectivo recibido: ${self.pago.recibido:,.0f}")
+            print(f"Cambio: ${self.pago.recibido - self.pago.monto:,.0f}")
+        else:
+            print("Pago digital simulado. Referencia:", self.pago.referencia)
+        print("==================================\n")
+
+
+class Venta:
+    def __init__(self, numero, cliente, cajero):
+        self.numero = numero
+        self.cliente = cliente
+        self.cajero = cajero
+        self.fecha = date.today()
+        self.detalles = []
+        self.factura = None
+        self.pago = None
+
+    def agregar(self, detalle):
+        usados = detalle.kilos
+        for d in self.detalles:
+            if d.producto == detalle.producto:
+                usados += d.kilos
+        if usados > detalle.producto.stock():
+            return False
+        self.detalles.append(detalle)
+        return True
+
+    def total(self):
+        return round(sum(d.subtotal() for d in self.detalles), 2)
+
+    def confirmar(self, pago):
+        if not self.detalles or not pago.procesar_pago():
+            return False
+        # Verificacion del inventario antes de realizar cambios
+        for d in self.detalles:
+            if sum(x.kilos for x in self.detalles if x.producto == d.producto) > d.producto.stock():
+                return False
+        for d in self.detalles:
+            d.producto.descontar(d.kilos)
+        self.pago = pago
+        self.factura = Factura(self.numero, self, pago)
+        self.cliente.ventas.append(self)
+        return True
+
+
+# ====== DATOS DEL SISTEMA ======
+categorias = []
+productos = []
+lotes = []
+clientes = []
+empleados = []
+proveedores = []
+compras = []
+ventas = []
+controles = []
+cuarto = CuartoFrio("Refrigeracion principal", 2000, 0, 4)
+bascula = BasculaDigital()
+
+
+def codigo_nuevo(lista):
+    if not lista:
+        return 1
+    return max(x.codigo for x in lista) + 1
+
+
+def catalogo_inicial():
+    catalogo = [
+        ("CARNE DE RES", [("Lomo fino", 42000), ("Lomo ancho", 39000),
+         ("Punta de anca", 38000), ("Muchacho", 30000),
+         ("Bola de pierna", 32000), ("Sobrebarriga", 28000),
+         ("Costilla de res", 24000), ("Carne molida de res", 26000),
+         ("Pecho de res", 23000), ("Osobuco", 22000)]),
+        ("CARNE DE CERDO", [("Lomo de cerdo", 23000), ("Costilla de cerdo", 25000),
+         ("Tocino", 18000), ("Chuleta de cerdo", 24000),
+         ("Pierna de cerdo", 22000), ("Espaldilla", 19000),
+         ("Carne molida de cerdo", 20000), ("Panceta", 26000),
+         ("Solomito de cerdo", 29000), ("Pernil de cerdo", 23000)]),
+        ("POLLO", [("Pollo entero", 12000), ("Pechuga", 19000),
+         ("Muslos", 13000), ("Contramuslos", 14000),
+         ("Alas", 12000), ("Pernil de pollo", 15000),
+         ("Filete de pechuga", 22000), ("Menudencias", 8000)]),
+        ("PESCADOS", [("Mojarra roja", 17000), ("Tilapia", 16000),
+         ("Bagre", 23000), ("Trucha", 25000), ("Salmon", 65000),
+         ("Bocachico", 20000), ("Sierra", 26000),
+         ("Filete de pescado", 29000)]),
+        ("EMBUTIDOS", [("Chorizo santarrosano", 27000), ("Chorizo criollo", 24000),
+         ("Salchicha", 16000), ("Salchichon", 18000),
+         ("Longaniza", 25000), ("Morcilla", 16000),
+         ("Jamon", 29000), ("Salchicha ranchera", 21000)]),
+        ("VISCERAS", [("Higado de res", 16000), ("Corazon de res", 15000),
+         ("Lengua de res", 26000), ("Rinon de res", 13000),
+         ("Mondongo", 18000), ("Callo de res", 17000),
+         ("Mollejas de pollo", 12000), ("Higado de pollo", 9000)]),
+        ("CORDERO Y CABRA", [("Costilla de cordero", 40000),
+         ("Pierna de cordero", 45000), ("Paleta de cordero", 38000),
+         ("Chuleta de cordero", 48000), ("Carne de cabra", 32000),
+         ("Costilla de cabra", 34000)]),
+        ("CARNES PREPARADAS", [("Hamburguesa de res", 30000),
+         ("Hamburguesa de pollo", 26000), ("Carne para asar", 34000),
+         ("Brochetas", 32000), ("Carne adobada", 29000),
+         ("Churrasco", 39000), ("Pinchos mixtos", 30000),
+         ("Albondigas", 24000)]),
+        ("CARNES ESPECIALES", [("Pavo entero", 26000),
+         ("Pechuga de pavo", 35000), ("Pernil de pavo", 28000),
+         ("Conejo entero", 33000), ("Pato entero", 29000),
+         ("Codorniz", 36000)])
+    ]
+    for nombre_categoria, articulos in catalogo:
+        categoria = CategoriaProducto(codigo_nuevo(categorias), nombre_categoria)
+        categorias.append(categoria)
+        for nombre, precio in articulos:
+            producto = ProductoCarnico(codigo_nuevo(productos), nombre, precio, categoria)
+            productos.append(producto)
+            # Estos lotes son datos ficticios para pruebas del sistema.
+            lote = LoteCarne(codigo_nuevo(lotes), producto, 10, date.today() + timedelta(days=30))
+            cuarto.almacenar(lote)
+            lotes.append(lote)
+
+
+def completar_datos_de_ejemplo():
+    """Crear datos de demostracion solamente cuando falte cada grupo."""
+    cambios = False
+
+    if not clientes:
+        clientes.append(Cliente("Cliente de prueba", "DEMO-C1", "3000000000", "Direccion de prueba"))
+        clientes.append(Cliente("Cliente de mostrador", "DEMO-C2", "3000000001", "Mostrador"))
+        cambios = True
+
+    if not proveedores:
+        proveedores.append(Proveedor(codigo_nuevo(proveedores), "Frigorifico de prueba", "3001111111"))
+        proveedores.append(Proveedor(codigo_nuevo(proveedores), "Distribuidora de prueba", "3002222222"))
+        cambios = True
+
+    if not empleados:
+        empleados.append(Cajero("Cajero de prueba", "DEMO-E1", "3003333333", 1600000, 1))
+        empleados.append(Carnicero("Carnicero de prueba", "DEMO-E2", "3004444444", 1700000, 100000))
+        cambios = True
+
+    return cambios
+
+
+# ====== GUARDAR Y RECUPERAR DATOS ======
+def guardar():
+    datos = {
+        "categorias": [{"id": c.codigo, "nombre": c.nombre} for c in categorias],
+        "productos": [{"id": p.codigo, "nombre": p.nombre, "precio": p.get_precio(),
+                       "categoria": p.categoria.codigo} for p in productos],
+        "lotes": [{"id": l.codigo, "producto": l.producto.codigo,
+                   "kilos": l.kilos, "vencimiento": l.vencimiento.isoformat()} for l in lotes],
+        "clientes": [{"nombre": c.get_nombre(), "documento": c.documento,
+                      "telefono": c.telefono, "direccion": c.direccion} for c in clientes],
+        "empleados": [{"nombre": e.get_nombre(), "documento": e.documento,
+                       "telefono": e.telefono, "salario": e.get_salario(),
+                       "cargo": e.cargo, "bono": getattr(e, "bono", 0),
+                       "caja": getattr(e, "caja", 0)} for e in empleados],
+        "proveedores": [{"id": p.codigo, "nombre": p.nombre,
+                         "telefono": p.telefono} for p in proveedores],
+        "compras": [{"id": o.codigo, "proveedor": o.proveedor.codigo,
+                     "fecha": o.fecha.isoformat(),
+                     "detalles": [{"producto": d.producto.codigo, "kilos": d.kilos,
+                                   "costo": d.costo} for d in o.detalles]} for o in compras],
+        "ventas": [{"numero": v.numero, "cliente": v.cliente.documento,
+                    "cajero": v.cajero.documento if v.cajero else None,
+                    "fecha": v.fecha.isoformat(),
+                    "detalles": [{"producto": d.producto.codigo, "kilos": d.kilos,
+                                  "precio": d.precio} for d in v.detalles],
+                    "pago": {"tipo": "efectivo", "recibido": v.pago.recibido}
+                    if isinstance(v.pago, PagoEfectivo)
+                    else {"tipo": "digital", "referencia": v.pago.referencia}}
+                   for v in ventas],
+        "controles": [{"lote": r.lote.codigo, "temperatura": r.temperatura,
+                       "fecha": r.fecha.isoformat()} for r in controles]
+    }
+    with open(ARCHIVO, "w", encoding="utf-8") as archivo:
+        json.dump(datos, archivo, ensure_ascii=False, indent=2)
+
+
+def cargar():
+    
+    
+    anterior = os.path.join(os.getcwd(), "datos_carniceria.json")
+    if not os.path.exists(ARCHIVO) and os.path.isfile(anterior):
+        if os.path.abspath(anterior) != os.path.abspath(ARCHIVO):
+            shutil.copy2(anterior, ARCHIVO)
+
+    if not os.path.exists(ARCHIVO):
+        catalogo_inicial()
+        completar_datos_de_ejemplo()
+        guardar()
+        return
+
+    with open(ARCHIVO, "r", encoding="utf-8") as archivo:
+        datos = json.load(archivo)
+
+    categorias_por_id = {}
+    productos_por_id = {}
+    lotes_por_id = {}
+    clientes_por_doc = {}
+    empleados_por_doc = {}
+    proveedores_por_id = {}
+
+    for x in datos["categorias"]:
+        c = CategoriaProducto(x["id"], x["nombre"])
+        categorias.append(c)
+        categorias_por_id[c.codigo] = c
+
+    for x in datos["productos"]:
+        p = ProductoCarnico(x["id"], x["nombre"], x["precio"],
+                           categorias_por_id[x["categoria"]])
+        productos.append(p)
+        productos_por_id[p.codigo] = p
+
+    for x in datos["lotes"]:
+        lote = LoteCarne(x["id"], productos_por_id[x["producto"]],
+                         x["kilos"], date.fromisoformat(x["vencimiento"]))
+        cuarto.almacenar(lote)
+        lotes.append(lote)
+        lotes_por_id[lote.codigo] = lote
+
+    for x in datos["clientes"]:
+        c = Cliente(x["nombre"], x["documento"], x["telefono"], x["direccion"])
+        clientes.append(c)
+        clientes_por_doc[c.documento] = c
+
+    for x in datos["empleados"]:
+        if x["cargo"] == "Carnicero":
+            e = Carnicero(x["nombre"], x["documento"], x["telefono"],
+                          x["salario"], x["bono"])
+        else:
+            e = Cajero(x["nombre"], x["documento"], x["telefono"],
+                       x["salario"], x["caja"])
+        empleados.append(e)
+        empleados_por_doc[e.documento] = e
+
+    for x in datos["proveedores"]:
+        p = Proveedor(x["id"], x["nombre"], x["telefono"])
+        proveedores.append(p)
+        proveedores_por_id[p.codigo] = p
+
+    for x in datos["compras"]:
+        o = OrdenCompra(x["id"], proveedores_por_id[x["proveedor"]])
+        o.fecha = date.fromisoformat(x["fecha"])
+        for d in x["detalles"]:
+            o.agregar(DetalleOrdenCompra(productos_por_id[d["producto"]],
+                                        d["kilos"], d["costo"]))
+        compras.append(o)
+
+    for x in datos["ventas"]:
+        cajero = empleados_por_doc.get(x["cajero"])
+        v = Venta(x["numero"], clientes_por_doc[x["cliente"]], cajero)
+        v.fecha = date.fromisoformat(x["fecha"])
+        for d in x["detalles"]:
+            v.detalles.append(DetalleVenta(productos_por_id[d["producto"]],
+                                          d["kilos"], d["precio"]))
+        if x["pago"]["tipo"] == "efectivo":
+            v.pago = PagoEfectivo(v.total(), x["pago"]["recibido"])
+        else:
+            v.pago = PagoDigital(v.total(), x["pago"]["referencia"])
+        v.factura = Factura(v.numero, v, v.pago)
+        v.cliente.ventas.append(v)
+        ventas.append(v)
+
+    for x in datos["controles"]:
+        r = RegControlFrio(lotes_por_id[x["lote"]], x["temperatura"])
+        r.fecha = datetime.fromisoformat(x["fecha"])
+        controles.append(r)
+
+    # Si el usuario ya tenia productos guardados pero aun no habia creado
+    # personas o proveedores, se agregan datos de prueba sin borrar nada.
+    if completar_datos_de_ejemplo():
+        guardar()
+
+
+# ====== ENTRADAS Y BUSQUEDAS ======
+def texto_obligatorio(mensaje):
+    while True:
+        valor = input(mensaje).strip()
+        if valor:
+            return valor
+        print("Este dato no puede quedar vacio.")
+
+
+def numero(mensaje, minimo=0):
+    while True:
+        try:
+            valor = float(input(mensaje).replace(",", "."))
+            if valor >= minimo:
+                return valor
+        except ValueError:
+            pass
+        print("Ingrese un numero valido.")
+
+
+def entero(mensaje, minimo=0):
+    while True:
+        try:
+            valor = int(input(mensaje))
+            if valor >= minimo:
+                return valor
+        except ValueError:
+            pass
+        print("Ingrese un entero valido.")
+
+
+def fecha_vencimiento():
+    while True:
+        try:
+            fecha = date.fromisoformat(input("Vencimiento (AAAA-MM-DD): "))
+            if fecha >= date.today():
+                return fecha
+        except ValueError:
+            pass
+        print("Introduzca una fecha valida que no haya pasado.")
+
+
+def elegir(lista, titulo):
+    if not lista:
+        print("No hay registros de", titulo)
+        return None
+    print("\n---", titulo.upper(), "---")
+    for i, obj in enumerate(lista, 1):
+        nombre = obj.get_nombre() if isinstance(obj, Persona) else obj.nombre
+        print(i, "-", nombre)
+    opcion = entero("Numero (0 cancelar): ")
+    if opcion == 0:
+        return None
+    if 1 <= opcion <= len(lista):
+        return lista[opcion - 1]
+    print("Opcion no valida")
+    return None
+
+
+def buscar_producto():
+    palabra = input("Buscar nombre o categoria (Enter = todos): ").strip().lower()
+    encontrados = []
+    for p in productos:
+        if palabra in p.nombre.lower() or palabra in p.categoria.nombre.lower():
+            print(f"{p.codigo:3} | {p.nombre:25} | ${p.get_precio():,.0f}/kg | {p.stock():g} kg")
+            encontrados.append(p)
+    if not encontrados:
+        print("No hay coincidencias")
+        return None
+    codigo = entero("Codigo del producto (0 cancelar): ")
+    for p in encontrados:
+        if p.codigo == codigo:
+            return p
+    print("Codigo no encontrado")
+    return None
+
+
+def registrar_lote(producto, kilos):
+    if kilos > cuarto.espacio():
+        print("Espacio insuficiente en el cuarto frio")
+        return False
+    vencimiento = fecha_vencimiento()
+    lote = LoteCarne(codigo_nuevo(lotes), producto, kilos, vencimiento)
+    cuarto.almacenar(lote)
+    lotes.append(lote)
+    guardar()
+    print("Lote", lote.codigo, "registrado")
+    return True
+
+
+# ====== OPERACIONES DEL MENU ======
+def ver_catalogo():
+    print("\n========== CATALOGO DE PRODUCTOS ==========")
+    for c in categorias:
+        print("\n", c.nombre)
+        for p in c.productos:
+            print(f"  {p.codigo:3} - {p.nombre:25} ${p.get_precio():,.0f}/kg | {p.stock():g} kg")
+
+
+def ver_registros():
+    print("\nCLIENTES")
+    for c in clientes:
+        print(c.documento, c.get_nombre(), "-", len(c.ventas), "ventas")
+    print("\nEMPLEADOS")
+    for e in empleados:
+        print(e.documento, e.get_nombre(), e.cargo, f"${e.calcular_salario():,.0f}")
+    print("\nPROVEEDORES")
+    for p in proveedores:
+        print(p.codigo, p.nombre, "-", len(p.ordenes), "compras")
+    print("\nCOMPRAS")
+    for o in compras:
+        print(o.codigo, o.proveedor.nombre, f"${o.total():,.0f}")
+    print("\nVENTAS")
+    for v in ventas:
+        print(v.numero, v.cliente.get_nombre(), f"${v.total():,.0f}")
+    print("\nCONTROL DE FRIO")
+    for r in controles:
+        print(r.lote.codigo, r.temperatura, "C -", r.generar_alerta())
+    print("\nCUARTO FRIO: espacio disponible", cuarto.espacio(), "kg")
+
+
+def registrar_venta():
+    cliente = elegir(clientes, "clientes")
+    if cliente is None:
+        return
+    cajeros = [e for e in empleados if isinstance(e, Cajero)]
+    cajero = elegir(cajeros, "cajeros") if cajeros else None
+    venta = Venta(max([v.numero for v in ventas], default=0) + 1, cliente, cajero)
+    while True:
+        producto = buscar_producto()
+        if producto is None:
+            break
+        kilos = bascula.capturar_peso(numero("Kilos vendidos: ", 0.001))
+        detalle = DetalleVenta(producto, kilos, producto.get_precio())
+        if venta.agregar(detalle):
+            print(f"Agregado: {producto.nombre} - ${detalle.subtotal():,.0f}")
+        else:
+            print("Inventario insuficiente")
+        if input("Agregar otro producto? (s/n): ").lower() != "s":
+            break
+    if not venta.detalles:
+        print("Venta cancelada: no hay productos")
+        return
+    print(f"TOTAL: ${venta.total():,.0f}")
+    print("1. Efectivo    2. Pago digital (simulado)")
+    opcion = input("Forma de pago: ")
+    if opcion == "1":
+        pago = PagoEfectivo(venta.total(), numero("Efectivo recibido: "))
+    elif opcion == "2":
+        pago = PagoDigital(venta.total(), texto_obligatorio("Referencia: "))
+    else:
+        print("Forma de pago invalida")
+        return
+    if venta.confirmar(pago):
+        ventas.append(venta)
+        guardar()
+        venta.factura.imprimir()
+    else:
+        print("No se pudo confirmar la venta (pago o stock insuficiente)")
+
+
+def demostracion_poo():
+    print("\n===== DEMOSTRACION DE POO =====")
+    p = productos[0]
+    print("OBJETO ProductoCarnico:", p.nombre)
+    print("GETTER precio:", p.get_precio())
+    print("METODO stock:", p.stock(), "kg")
+    print("RELACION producto-categoria:", p.categoria.nombre)
+    print("RELACION producto-lotes:", len(p.lotes), "lotes")
+    if clientes:
+        c = clientes[0]
+        print("OBJETO Cliente:", c.get_nombre())
+        print("HERENCIA Cliente es Persona:", isinstance(c, Persona))
+    for e in empleados:
+        print("POLIMORFISMO", e.cargo, e.get_nombre(), "salario:", e.calcular_salario())
+    print("No se modifican datos en esta demostracion")
+
+
+def menu():
+    while True:
+        print("\n========== SISTEMA DE CARNICERIA ==========")
+        print("1. Registrar categoria")
+        print("2. Registrar producto")
+        print("3. Registrar lote / inventario")
+        print("4. Registrar cliente")
+        print("5. Registrar proveedor")
+        print("6. Registrar empleado")
+        print("7. Registrar compra")
+        print("8. Registrar venta y factura")
+        print("9. Registrar control de frio")
+        print("10. Modificar precio")
+        print("11. Consultar registros")
+        print("12. Demostracion de POO")
+        print("13. Ver los 72 productos")
+        print("14. Modificar cliente / empleado")
+        print("15. Ver facturas")
+        print("16. Reporte de ventas e inventario")
+        print("0. Salir")
+        op = input("Opcion: ").strip()
+
+        if op == "1":
+            nombre = texto_obligatorio("Nombre categoria: ")
+            categorias.append(CategoriaProducto(codigo_nuevo(categorias), nombre))
+            guardar()
+            print("Categoria creada")
+
+        elif op == "2":
+            categoria = elegir(categorias, "categorias")
+            if categoria:
+                nombre = texto_obligatorio("Nombre producto: ")
+                precio = numero("Precio por kilo: ", 0.01)
+                productos.append(ProductoCarnico(codigo_nuevo(productos), nombre, precio, categoria))
+                guardar()
+                print("Producto creado. Agregue sus kilos en opcion 3")
+
+        elif op == "3":
+            producto = buscar_producto()
+            if producto:
+                kilos = numero("Kilos para agregar: ", 0.001)
+                registrar_lote(producto, kilos)
+
+        elif op == "4":
+            nombre = texto_obligatorio("Nombre: ")
+            documento = texto_obligatorio("Documento: ")
+            if any(c.documento == documento for c in clientes):
+                print("Ya existe un cliente con ese documento")
+                continue
+            telefono = texto_obligatorio("Telefono: ")
+            direccion = texto_obligatorio("Direccion: ")
+            clientes.append(Cliente(nombre, documento, telefono, direccion))
+            guardar()
+            print("Cliente registrado")
+
+        elif op == "5":
+            nombre = texto_obligatorio("Proveedor: ")
+            telefono = texto_obligatorio("Telefono: ")
+            proveedores.append(Proveedor(codigo_nuevo(proveedores), nombre, telefono))
+            guardar()
+            print("Proveedor registrado")
+
+        elif op == "6":
+            print("1. Carnicero    2. Cajero")
+            tipo = input("Tipo: ")
+            if tipo not in ("1", "2"):
+                print("Tipo no valido")
+                continue
+            nombre = texto_obligatorio("Nombre: ")
+            documento = texto_obligatorio("Documento: ")
+            if any(e.documento == documento for e in empleados):
+                print("Ya existe un empleado con ese documento")
+                continue
+            telefono = texto_obligatorio("Telefono: ")
+            salario = numero("Salario base: ")
+            if tipo == "1":
+                empleado = Carnicero(nombre, documento, telefono, salario, numero("Bono: "))
+            else:
+                empleado = Cajero(nombre, documento, telefono, salario, entero("Numero de caja: ", 1))
+            empleados.append(empleado)
+            guardar()
+            print("Empleado registrado")
+
+        elif op == "7":
+            proveedor = elegir(proveedores, "proveedores")
+            if proveedor is None:
+                continue
+            producto = buscar_producto()
+            if producto is None:
+                continue
+            kilos = numero("Kilos comprados: ", 0.001)
+            costo = numero("Costo por kg: ", 0.01)
+            if registrar_lote(producto, kilos):
+                orden = OrdenCompra(codigo_nuevo(compras), proveedor)
+                orden.agregar(DetalleOrdenCompra(producto, kilos, costo))
+                compras.append(orden)
+                guardar()
+                print(f"Compra registrada por ${orden.total():,.0f}")
+
+        elif op == "8":
+            registrar_venta()
+
+        elif op == "9":
+            if not lotes:
+                print("No hay lotes")
+                continue
+            for l in lotes:
+                print(l.codigo, l.producto.nombre, "-", l.estado())
+            codigo = entero("Codigo lote (0 cancelar): ")
+            lote = next((l for l in lotes if l.codigo == codigo), None)
+            if lote:
+                temperatura = numero("Temperatura registrada en C: ", -100)
+                control = RegControlFrio(lote, temperatura)
+                controles.append(control)
+                guardar()
+                print(control.generar_alerta())
+            else:
+                print("Lote no encontrado")
+
+        elif op == "10":
+            producto = buscar_producto()
+            if producto:
+                producto.set_precio(numero("Nuevo precio/kg: ", 0.01))
+                guardar()
+                print("Precio actualizado:", producto.get_precio())
+
+        elif op == "11":
+            ver_registros()
+
+        elif op == "12":
+            demostracion_poo()
+
+        elif op == "13":
+            ver_catalogo()
+
+        elif op == "14":
+            print("1. Cambiar nombre de cliente")
+            print("2. Cambiar salario base de empleado")
+            print("3. Cambiar nombre de empleado")
+            tipo = input("Opcion: ")
+            if tipo == "1":
+                c = elegir(clientes, "clientes")
+                if c:
+                    c.set_nombre(texto_obligatorio("Nuevo nombre: "))
+                    guardar()
+            elif tipo in ("2", "3"):
+                e = elegir(empleados, "empleados")
+                if e:
+                    if tipo == "2":
+                        e.set_salario(numero("Nuevo salario: "))
+                    else:
+                        e.set_nombre(texto_obligatorio("Nuevo nombre: "))
+                    guardar()
+
+        elif op == "15":
+            if not ventas:
+                print("Todavia no hay facturas")
+            for venta in ventas:
+                venta.factura.imprimir()
+
+        elif op == "16":
+            total = sum(v.total() for v in ventas)
+            inventario = sum(p.stock() for p in productos)
+            print("\n====== REPORTE GENERAL ======")
+            print("Total de ventas realizadas:", len(ventas))
+            print(f"Ingresos por ventas: ${total:,.0f}")
+            print("Productos en catalogo:", len(productos))
+            print("Kilos disponibles:", round(inventario, 2))
+            print("Lotes vencidos:", sum(l.estado() == "Vencido" for l in lotes))
+            print("Alertas de frio:", sum("ALERTA" in r.generar_alerta() for r in controles))
+            print("No incluye costos, impuestos ni utilidad neta")
+
+        elif op == "0":
+            guardar()
+            print("Datos guardados. Hasta luego.")
+            break
+
+        else:
+            print("Opcion invalida")
+
+
+if __name__ == "__main__":
+    try:
+        cargar()
+        print(f"Sistema listo: {len(categorias)} categorias y {len(productos)} productos.")
+        print(f"Datos disponibles: {len(clientes)} clientes, {len(proveedores)} proveedores y {len(empleados)} empleados.")
+        print("Archivo de datos:", ARCHIVO)
+        menu()
+    except (OSError, ValueError, KeyError) as error:
+        print("No se pudieron cargar o guardar los datos:", error)
+        print("Revise el archivo de datos antes de continuar.")
+
